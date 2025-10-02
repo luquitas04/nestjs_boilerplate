@@ -1,8 +1,4 @@
 #!/usr/bin/env node
-// Uso: node setup-nestjs-pro.mjs my-nest-api
-// Crea proyecto NestJS + TypeORM(Postgres) + Users + Auth(JWT),
-// pide credenciales DB, seed de admin y evita imports duplicados en AppModule.
-
 import { execSync } from "node:child_process";
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -40,58 +36,42 @@ async function ask(prompts) {
     { name: "ADMIN_FULLNAME", q: "Admin full name", default: "Admin" },
   ]);
 
-  // 1) Crear proyecto Nest
   if (!existsSync(root)) mkdirSync(root, { recursive: true });
-  console.log("🚀 Creando proyecto NestJS...");
   execSync(`npx @nestjs/cli new ${projectName} --package-manager npm`, { stdio: "inherit" });
 
-  // 2) Instalar deps
-  console.log("📦 Instalando dependencias (TypeORM, Postgres, JWT, Passport, bcrypt, validation)...");
   sh("npm i @nestjs/typeorm typeorm pg @nestjs/config");
   sh("npm i @nestjs/jwt @nestjs/passport passport passport-jwt");
   sh("npm i bcryptjs");
   sh("npm i class-validator class-transformer");
   sh("npm i -D @types/bcryptjs");
 
-  // 3) Generar módulos PRIMERO para que el CLI agregue imports,
-  // luego sobreescribimos AppModule una sola vez (evita duplicados).
-  console.log("👤 Creando módulo Users...");
   sh("npx nest g module users");
   sh("npx nest g service users --no-spec");
   sh("npx nest g controller users --no-spec");
   mkdirSync(join(root, "src/users/dto"), { recursive: true });
 
-  console.log("🔐 Creando módulo Auth...");
   sh("npx nest g module auth");
   sh("npx nest g service auth --no-spec");
   sh("npx nest g controller auth --no-spec");
   mkdirSync(join(root, "src/auth"), { recursive: true });
 
-  // 4) .env con datos provistos
-  console.log("📝 Generando .env...");
-  writeFileSync(join(root, ".env"), `# Server
-PORT=3000
+  writeFileSync(join(root, ".env"), `PORT=3000
 NODE_ENV=development
 
-# Database
 DB_HOST=${db.DB_HOST}
 DB_PORT=${db.DB_PORT}
 DB_USER=${db.DB_USER}
 DB_PASS=${db.DB_PASS}
 DB_NAME=${db.DB_NAME}
 
-# JWT
 JWT_SECRET=changeme-in-prod
 JWT_EXPIRES_IN=1d
 
-# Seed (solo primer usuario)
 SEED_ADMIN_EMAIL=${admin.ADMIN_EMAIL}
 SEED_ADMIN_PASSWORD=${admin.ADMIN_PASSWORD}
 SEED_ADMIN_FULLNAME=${admin.ADMIN_FULLNAME}
 `);
 
-  // 5) main.ts
-  console.log("🔧 Ajustando main.ts (ValidationPipe)...");
   writeFileSync(join(root, "src/main.ts"), `import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
@@ -101,12 +81,10 @@ async function bootstrap() {
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
   const port = process.env.PORT || 3000;
   await app.listen(port);
-  console.log('API running on http://localhost:' + port);
 }
 bootstrap();
 `);
 
-  // 6) Código Users
   writeFileSync(join(root, "src/users/user.entity.ts"), `import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from 'typeorm';
 
 @Entity()
@@ -118,7 +96,7 @@ export class User {
   email: string;
 
   @Column()
-  password: string; // hashed
+  password: string;
 
   @Column({ name: 'full_name' })
   fullName: string;
@@ -173,7 +151,6 @@ export class UsersService {
   async create(data: CreateUserDto) {
     const exists = await this.repo.findOne({ where: { email: data.email } });
     if (exists) throw new ConflictException('Email already in use');
-
     const hashed = await bcrypt.hash(data.password, 10);
     const user = this.repo.create({ ...data, password: hashed });
     return this.repo.save(user);
@@ -231,7 +208,6 @@ import { User } from './user.entity';
 export class UsersModule {}
 `);
 
-  // 7) Código Auth
   writeFileSync(join(root, "src/auth/jwt.strategy.ts"), `import { Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
@@ -245,7 +221,6 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       secretOrKey: process.env.JWT_SECRET,
     });
   }
-
   async validate(payload: any) {
     return { sub: payload.sub, email: payload.email, fullName: payload.fullName };
   }
@@ -329,8 +304,6 @@ import { JwtStrategy } from './jwt.strategy';
 export class AuthModule {}
 `);
 
-  // 8) AppModule FINAL (sobrescribe lo que tocó el CLI => sin duplicados)
-  console.log("🧩 Escribiendo AppModule final (sin duplicados)...");
   writeFileSync(join(root, "src/app.module.ts"), `import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -348,7 +321,7 @@ import { AuthModule } from './auth/auth.module';
       password: process.env.DB_PASS,
       database: process.env.DB_NAME,
       autoLoadEntities: true,
-      synchronize: true, // ⚠️ Solo DEV
+      synchronize: true,
     }),
     UsersModule,
     AuthModule,
@@ -357,7 +330,6 @@ import { AuthModule } from './auth/auth.module';
 export class AppModule {}
 `);
 
-  // 9) Seed script
   const pkgPath = join(root, "package.json");
   const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
   pkg.scripts = pkg.scripts || {};
@@ -377,51 +349,39 @@ async function run() {
   const fullName = process.env.SEED_ADMIN_FULLNAME || 'Admin';
 
   if (!email || !password) {
-    console.log('Seed: faltan SEED_ADMIN_EMAIL o SEED_ADMIN_PASSWORD en el .env');
+    console.log('Seed: missing admin credentials in .env');
     await app.close();
     return;
   }
 
   const exists = await users.findByEmail(email);
   if (exists) {
-    console.log('Seed: admin ya existe ->', email);
+    console.log('Seed: admin already exists ->', email);
   } else {
     await users.create({ email, password, fullName });
-    console.log('Seed: admin creado ->', email);
+    console.log('Seed: admin created ->', email);
   }
 
   await app.close();
 }
-
 run();
 `);
 
-  // 10) README
   writeFileSync(join(root, "README_quickstart.md"), `# Quickstart
 
 ## Run
-\`\`\`bash
 npm install
 npm run start:dev
-\`\`\`
 
 ## Seed (admin)
-\`\`\`bash
 npm run seed
-\`\`\`
 
 ## Auth
-- \`POST /auth/register\` { email, password, fullName }
-- \`POST /auth/login\` { email, password } -> { access_token }
+- POST /auth/register { email, password, fullName }
+- POST /auth/login { email, password } -> { access_token }
 
 ## Users
-- \`GET /users\`
-- \`GET /users/me\` (Bearer token)
+- GET /users
+- GET /users/me (Bearer token)
 `);
-
-  console.log("✅ Listo! Sin imports duplicados. Entrá a la carpeta y corré el proyecto.");
-  console.log(`➡️ cd ${projectName} && npm run start:dev (y npm run seed si querés crear el admin)`);
-})().catch((e) => {
-  console.error("❌ Error:", e);
-  process.exit(1);
-});
+})();
